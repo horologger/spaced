@@ -106,6 +106,17 @@ impl ExtendedNetwork {
             ExtendedNetwork::Testnet4 => Network::Testnet,
         }
     }
+
+    pub fn from_core_arg(arg: &str) -> Result<Self, ()> {
+        match arg.to_lowercase().as_str() {
+            "main" => Ok(ExtendedNetwork::Mainnet),
+            "test" => Ok(ExtendedNetwork::Testnet),
+            "testnet4" => Ok(ExtendedNetwork::Testnet4),
+            "signet" => Ok(ExtendedNetwork::Signet),
+            "regtest" => Ok(ExtendedNetwork::Regtest),
+            _ => Err(()),
+        }
+    }
 }
 
 impl Args {
