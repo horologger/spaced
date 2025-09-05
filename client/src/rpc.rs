@@ -509,8 +509,10 @@ impl WalletManager {
         // If hex_secret is requested, we need to extract it from the wallet descriptor
         if hex_secret {
             // Parse the descriptor to extract the xprv and get the hex secret
-            if let Some(hex_secret_value) = self.extract_hex_secret_from_descriptor(&export.descriptor)? {
-                export.hex_secret = Some(hex_secret_value);
+            if let Some(descriptor) = &export.descriptor {
+                if let Some(hex_secret_value) = self.extract_hex_secret_from_descriptor(descriptor)? {
+                    export.hex_secret = Some(hex_secret_value);
+                }
             }
         }
         
@@ -650,11 +652,55 @@ impl WalletManager {
             name: name.to_string(),
             network,
             genesis_hash,
-            space_descriptors: WalletDescriptors {
-                external: export.descriptor(),
-                internal: export
-                    .change_descriptor()
-                    .expect("expected a change descriptor"),
+            space_descriptors: {
+                let external_descriptor = export.descriptor().expect("expected a descriptor");
+                let internal_descriptor = export.change_descriptor().expect("expected a change descriptor");
+                
+                // Check if this is a hex-based descriptor and convert it
+                let (external, internal) = if external_descriptor.starts_with("tr([hex:") {
+                    // Extract hex secret from descriptor
+                    if let Some(hex_secret) = export.hex_secret.as_ref() {
+                        // Convert hex secret to proper xprv and create descriptors
+                        let xpriv = Self::xpriv_from_hex_secret(network, hex_secret)?;
+                        let (external_desc, internal_desc) = Self::default_descriptors(xpriv);
+                        
+                        // Create a temporary wallet to get the descriptor strings
+                        let temp_wallet = bdk::Wallet::create(external_desc, internal_desc)
+                            .network(network)
+                            .create_wallet_no_persist()?;
+                        
+                        // Get descriptor strings using the same method as WalletExport
+                        let external_str = temp_wallet
+                            .public_descriptor(KeychainKind::External)
+                            .to_string_with_secret(
+                                &temp_wallet
+                                    .get_signers(KeychainKind::External)
+                                    .as_key_map(temp_wallet.secp_ctx()),
+                            );
+                        let internal_str = temp_wallet
+                            .public_descriptor(KeychainKind::Internal)
+                            .to_string_with_secret(
+                                &temp_wallet
+                                    .get_signers(KeychainKind::Internal)
+                                    .as_key_map(temp_wallet.secp_ctx()),
+                            );
+                        
+                        // Remove checksums (same as WalletExport does)
+                        let external_str = Self::remove_checksum(external_str);
+                        let internal_str = Self::remove_checksum(internal_str);
+                        
+                        (external_str, internal_str)
+                    } else {
+                        return Err(anyhow!("Hex-based descriptor found but no hex_secret in export"));
+                    }
+                } else {
+                    (external_descriptor, internal_descriptor)
+                };
+                
+                WalletDescriptors {
+                    external,
+                    internal,
+                }
             },
         };
 
@@ -692,11 +738,55 @@ impl WalletManager {
         Ok(xkey.into_xprv(network).expect("xpriv"))
     }
 
+    fn xpriv_from_hex_secret(network: Network, hex_secret: &str) -> anyhow::Result<Xpriv> {
+        use spaces_protocol::bitcoin::bip32::Xpriv;
+        use spaces_protocol::bitcoin::key::Secp256k1;
+        use spaces_protocol::bitcoin::secp256k1::SecretKey;
+        
+        // Parse hex secret
+        let secret_bytes = hex::decode(hex_secret)
+            .map_err(|e| anyhow!("Invalid hex secret: {}", e))?;
+        
+        if secret_bytes.len() != 32 {
+            return Err(anyhow!("Hex secret must be 32 bytes (64 hex characters)"));
+        }
+        
+        // Convert to SecretKey
+        let secret_key = SecretKey::from_slice(&secret_bytes)
+            .map_err(|e| anyhow!("Invalid secret key: {}", e))?;
+        
+        // Create Xpriv from secret key
+        let secp = Secp256k1::new();
+        let xpriv = Xpriv::new_master(network, &secret_key.secret_bytes())
+            .map_err(|e| anyhow!("Failed to create xpriv: {}", e))?;
+        
+        Ok(xpriv)
+    }
+
+    fn descriptor_from_hex_secret(network: Network, hex_secret: &str) -> anyhow::Result<String> {
+        // Parse hex secret
+        let secret_bytes = hex::decode(hex_secret)
+            .map_err(|e| anyhow!("Invalid hex secret: {}", e))?;
+        
+        if secret_bytes.len() != 32 {
+            return Err(anyhow!("Hex secret must be 32 bytes (64 hex characters)"));
+        }
+        
+        // For now, create a simple descriptor that can be processed by the wallet creation
+        // The actual xprv conversion will need to be handled in the wallet creation process
+        // This is a placeholder format that indicates this is a hex-based import
+        Ok(format!("tr([hex:{}]/86'/0'/0'/0/*)", hex_secret))
+    }
+
     fn default_descriptors(x: Xpriv) -> (Bip86<Xpriv>, Bip86<Xpriv>) {
         (
             Bip86(x, KeychainKind::External),
             Bip86(x, KeychainKind::Internal),
         )
+    }
+
+    fn remove_checksum(s: String) -> String {
+        s.split_once('#').map(|(a, _)| String::from(a)).unwrap_or(s)
     }
 
     fn extract_hex_secret_from_descriptor(&self, descriptor: &str) -> anyhow::Result<Option<String>> {
@@ -721,6 +811,11 @@ impl WalletManager {
         }
         
         Ok(None)
+    }
+
+    pub fn create_taproot_descriptor_from_hex(&self, hex_secret: &str) -> anyhow::Result<String> {
+        let (network, _) = self.fallback_network();
+        Self::descriptor_from_hex_secret(network, hex_secret)
     }
 }
 

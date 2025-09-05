@@ -42,6 +42,7 @@ use spaces_wallet::{
     nostr::{NostrEvent, NostrTag},
     Listing,
 };
+use hex;
 
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -107,6 +108,9 @@ enum Commands {
     ImportWallet {
         // Wallet json file to import
         path: PathBuf,
+        /// Use hex-encoded private key from json to generate taproot descriptor
+        #[arg(long, short = 'x')]
+        hex_secret: bool,
     },
     /// Export a wallet
     #[command(name = "getwalletinfo")]
@@ -539,6 +543,26 @@ fn normalize_space(space: &str) -> String {
     }
 }
 
+fn generate_taproot_descriptor_from_hex(hex_secret: &str, _network: ExtendedNetwork) -> Result<String, ClientError> {
+    // Parse hex secret
+    let secret_bytes = hex::decode(hex_secret)
+        .map_err(|e| ClientError::Custom(format!("Invalid hex secret: {}", e)))?;
+    
+    if secret_bytes.len() != 32 {
+        return Err(ClientError::Custom("Hex secret must be 32 bytes (64 hex characters)".to_string()));
+    }
+    
+    // For now, create a simple descriptor that indicates this is a hex-based import
+    // The actual xprv conversion would need to be done properly in the wallet creation
+    // This is a placeholder that will need to be handled by the wallet creation process
+    let descriptor = format!(
+        "tr([hex:{}]/86'/0'/0'/0/*)",
+        hex_secret
+    );
+    
+    Ok(descriptor)
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let (cli, args) = SpaceCli::configure().await?;
@@ -632,10 +656,28 @@ async fn handle_commands(cli: &SpaceCli, command: Commands) -> Result<(), Client
         Commands::LoadWallet => {
             cli.client.wallet_load(&cli.wallet).await?;
         }
-        Commands::ImportWallet { path } => {
+        Commands::ImportWallet { path, hex_secret } => {
             let content =
                 fs::read_to_string(path).map_err(|e| ClientError::Custom(e.to_string()))?;
-            let wallet: WalletExport = serde_json::from_str(&content)?;
+            let mut wallet: WalletExport = serde_json::from_str(&content)?;
+            
+            // If hex_secret is requested, generate taproot descriptor from hex secret
+            if hex_secret {
+                if let Some(hex_secret_value) = &wallet.hex_secret {
+                    // For now, we'll create a simple descriptor format
+                    // The actual conversion to xprv should be done in the wallet creation process
+                    let taproot_descriptor = format!("tr([hex:{}]/86'/0'/0'/0/*)", hex_secret_value);
+                    wallet.descriptor = Some(taproot_descriptor);
+                } else {
+                    return Err(ClientError::Custom("hex-secret option specified but no hex_secret found in wallet json".to_string()));
+                }
+            } else {
+                // If not using hex_secret, ensure descriptor is present
+                if wallet.descriptor.is_none() {
+                    return Err(ClientError::Custom("descriptor field is required when not using hex-secret option".to_string()));
+                }
+            }
+            
             cli.client.wallet_import(wallet).await?;
         }
         Commands::ExportWallet { path, hex_secret } => {

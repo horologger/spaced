@@ -21,7 +21,9 @@ use hex;
 /// For a usage example see [this module](crate::wallet::export)'s documentation.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WalletExport {
-    pub descriptor: String,
+    /// Wallet descriptor (optional when using hex-secret import)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub descriptor: Option<String>,
     /// Earliest block to rescan when looking for the wallet's transactions
     pub blockheight: u32,
     /// Arbitrary label for the wallet
@@ -95,7 +97,7 @@ impl WalletExport {
         };
 
         let export = WalletExport {
-            descriptor,
+            descriptor: Some(descriptor),
             label: label.into(),
             blockheight,
             hex_secret,
@@ -120,16 +122,19 @@ impl WalletExport {
     }
 
     /// Return the external descriptor
-    pub fn descriptor(&self) -> String {
+    pub fn descriptor(&self) -> Option<String> {
         self.descriptor.clone()
     }
 
     /// Return the internal descriptor, if present
     pub fn change_descriptor(&self) -> Option<String> {
-        let replaced = self.descriptor.replace("/0/*", "/1/*");
-
-        if replaced != self.descriptor {
-            Some(replaced)
+        if let Some(descriptor) = &self.descriptor {
+            let replaced = descriptor.replace("/0/*", "/1/*");
+            if replaced != *descriptor {
+                Some(replaced)
+            } else {
+                None
+            }
         } else {
             None
         }
