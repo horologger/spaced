@@ -98,6 +98,9 @@ enum Commands {
     ExportWallet {
         // Destination path to export json file
         path: PathBuf,
+        /// Include hex-encoded private key in export
+        #[arg(long, short = 'x')]
+        hex_secret: bool,
     },
     /// Import a wallet
     #[command(name = "importwallet")]
@@ -635,8 +638,8 @@ async fn handle_commands(cli: &SpaceCli, command: Commands) -> Result<(), Client
             let wallet: WalletExport = serde_json::from_str(&content)?;
             cli.client.wallet_import(wallet).await?;
         }
-        Commands::ExportWallet { path } => {
-            let result = cli.client.wallet_export(&cli.wallet).await?;
+        Commands::ExportWallet { path, hex_secret } => {
+            let result = cli.client.wallet_export(&cli.wallet, hex_secret).await?;
             let content = serde_json::to_string_pretty(&result).expect("result");
             fs::write(path, content).map_err(|e| {
                 ClientError::Custom(format!("Could not save to path: {}", e.to_string()))

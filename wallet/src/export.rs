@@ -12,7 +12,9 @@
 use core::{fmt, str::FromStr};
 
 use bdk_wallet::{KeychainKind, Wallet};
+use bdk_wallet::keys::DescriptorSecretKey;
 use serde::{Deserialize, Serialize};
+use hex;
 
 /// Structure that contains the export of a wallet
 ///
@@ -24,6 +26,9 @@ pub struct WalletExport {
     pub blockheight: u32,
     /// Arbitrary label for the wallet
     pub label: String,
+    /// Hex-encoded private key (optional)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hex_secret: Option<String>,
 }
 
 impl fmt::Display for WalletExport {
@@ -60,6 +65,7 @@ impl WalletExport {
         wallet: &Wallet,
         label: &str,
         blockheight: u32,
+        include_hex_secret: bool,
     ) -> Result<Self, &'static str> {
         let descriptor = wallet
             .public_descriptor(KeychainKind::External)
@@ -70,10 +76,29 @@ impl WalletExport {
             );
         let descriptor = remove_checksum(descriptor);
 
+        // Extract hex secret if requested
+        let hex_secret = if include_hex_secret {
+            match wallet
+                .get_signers(KeychainKind::External)
+                .signers()
+                .iter()
+                .filter_map(|s| s.descriptor_secret_key())
+                .next()
+            {
+                Some(DescriptorSecretKey::XPrv(xprv)) => {
+                    Some(hex::encode(xprv.xkey.private_key.secret_bytes()))
+                }
+                _ => None,
+            }
+        } else {
+            None
+        };
+
         let export = WalletExport {
             descriptor,
             label: label.into(),
             blockheight,
+            hex_secret,
         };
 
         let change_descriptor = {

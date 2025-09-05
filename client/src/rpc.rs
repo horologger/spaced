@@ -37,6 +37,7 @@ use spaces_protocol::{
     validate::TxChangeSet,
     Bytes, Covenant, FullSpaceOut, SpaceOut,
 };
+use hex;
 use spaces_wallet::{
     bdk_wallet as bdk, bdk_wallet::template::Bip86, bitcoin::hashes::Hash as BitcoinHash,
     export::WalletExport, nostr::NostrEvent, Balance, DoubleUtxo, Listing, SpacesWallet,
@@ -240,7 +241,7 @@ pub trait Rpc {
         -> Result<WalletInfoWithProgress, ErrorObjectOwned>;
 
     #[method(name = "walletexport")]
-    async fn wallet_export(&self, name: &str) -> Result<WalletExport, ErrorObjectOwned>;
+    async fn wallet_export(&self, name: &str, hex_secret: bool) -> Result<WalletExport, ErrorObjectOwned>;
 
     #[method(name = "walletcreate")]
     async fn wallet_create(&self, name: &str) -> Result<String, ErrorObjectOwned>;
@@ -497,13 +498,22 @@ impl WalletManager {
         Ok(())
     }
 
-    pub async fn export_wallet(&self, name: &str) -> anyhow::Result<WalletExport> {
+    pub async fn export_wallet(&self, name: &str, hex_secret: bool) -> anyhow::Result<WalletExport> {
         let wallet_dir = self.data_dir.join(name);
         if !wallet_dir.exists() {
             return Err(anyhow!("Wallet does not exist"));
         }
         let wallet = fs::read_to_string(wallet_dir.join("wallet.json"))?;
-        let export: WalletExport = serde_json::from_str(&wallet)?;
+        let mut export: WalletExport = serde_json::from_str(&wallet)?;
+        
+        // If hex_secret is requested, we need to extract it from the wallet descriptor
+        if hex_secret {
+            // Parse the descriptor to extract the xprv and get the hex secret
+            if let Some(hex_secret_value) = self.extract_hex_secret_from_descriptor(&export.descriptor)? {
+                export.hex_secret = Some(hex_secret_value);
+            }
+        }
+        
         Ok(export)
     }
 
@@ -558,7 +568,7 @@ impl WalletManager {
             .network(network)
             .create_wallet_no_persist()?;
         let export =
-            WalletExport::export_wallet(&tmp, &name, start_block.height).map_err(|e| anyhow!(e))?;
+            WalletExport::export_wallet(&tmp, &name, start_block.height, false).map_err(|e| anyhow!(e))?;
 
         Ok(export)
     }
@@ -687,6 +697,30 @@ impl WalletManager {
             Bip86(x, KeychainKind::External),
             Bip86(x, KeychainKind::Internal),
         )
+    }
+
+    fn extract_hex_secret_from_descriptor(&self, descriptor: &str) -> anyhow::Result<Option<String>> {
+        // Parse the descriptor to extract the xprv
+        // The descriptor format is typically: tr([xprv...]/path)...
+        // We need to extract the xprv part and convert it to hex
+        
+        // Find the xprv in the descriptor
+        if let Some(start) = descriptor.find("xprv") {
+            // Find the end of the xprv (before the next '/' or ')')
+            let end = descriptor[start..]
+                .find(|c| c == '/' || c == ')')
+                .map(|i| start + i)
+                .unwrap_or(descriptor.len());
+            
+            let xprv_str = &descriptor[start..end];
+            
+            // Parse the xprv
+            if let Ok(xprv) = Xpriv::from_str(xprv_str) {
+                return Ok(Some(hex::encode(xprv.private_key.secret_bytes())));
+            }
+        }
+        
+        Ok(None)
     }
 }
 
@@ -926,9 +960,9 @@ impl RpcServer for RpcServerImpl {
             .await
             .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>))
     }
-    async fn wallet_export(&self, name: &str) -> Result<WalletExport, ErrorObjectOwned> {
+    async fn wallet_export(&self, name: &str, hex_secret: bool) -> Result<WalletExport, ErrorObjectOwned> {
         self.wallet_manager
-            .export_wallet(name)
+            .export_wallet(name, hex_secret)
             .await
             .map_err(|error| {
                 ErrorObjectOwned::owned(RPC_WALLET_NOT_LOADED, error.to_string(), None::<String>)

@@ -16,6 +16,7 @@ use bdk_wallet::{
 };
 use bdk_wallet::chain::keychain_txout::KeychainTxOutIndex;
 use bincode::config;
+use hex;
 use bitcoin::{
     absolute::{Height, LockTime},
     bip32::ChildNumber,
@@ -1229,6 +1230,25 @@ impl SpacesWallet {
 
     pub fn peek_address(&self, keychain_kind: KeychainKind, index: u32) -> AddressInfo {
         self.internal.peek_address(keychain_kind, index)
+    }
+
+    pub fn extract_hex_secret(&self) -> anyhow::Result<String> {
+        let secret = match self
+            .internal
+            .get_signers(KeychainKind::External)
+            .signers()
+            .iter()
+            .filter_map(|s| s.descriptor_secret_key())
+            .next()
+        {
+            None => return Err(anyhow::anyhow!("No secret key found in signer")),
+            Some(secret) => secret,
+        };
+        let descriptor_x_key = match secret {
+            DescriptorSecretKey::XPrv(xprv) => xprv,
+            _ => return Err(anyhow::anyhow!("No xprv found")),
+        };
+        Ok(hex::encode(descriptor_x_key.xkey.private_key.secret_bytes()))
     }
 }
 
