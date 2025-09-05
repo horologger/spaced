@@ -480,13 +480,44 @@ pub struct WalletLoadRequest {
 const RPC_WALLET_NOT_LOADED: i32 = -18;
 
 impl WalletManager {
-    pub async fn import_wallet(&self, wallet: WalletExport) -> anyhow::Result<()> {
+    pub async fn import_wallet(&self, mut wallet: WalletExport) -> anyhow::Result<()> {
         let wallet_path = self.data_dir.join(&wallet.label);
         if wallet_path.exists() {
             return Err(anyhow!(format!(
                 "Wallet with label `{}` already exists",
                 wallet.label
             )));
+        }
+
+        // If this is a hex-based descriptor, convert it to proper xprv format before storing
+        if let Some(descriptor) = &wallet.descriptor {
+            if descriptor.starts_with("tr([hex:") {
+                if let Some(hex_secret) = &wallet.hex_secret {
+                    let (network, _) = self.fallback_network();
+                    let xpriv = Self::xpriv_from_hex_secret(network, hex_secret)?;
+                    let (external_desc, internal_desc) = Self::default_descriptors(xpriv);
+                    
+                    // Create a temporary wallet to get the descriptor strings
+                    let temp_wallet = bdk::Wallet::create(external_desc, internal_desc)
+                        .network(network)
+                        .create_wallet_no_persist()?;
+                    
+                    // Get proper xprv-based descriptor string
+                    let proper_descriptor = temp_wallet
+                        .public_descriptor(KeychainKind::External)
+                        .to_string_with_secret(
+                            &temp_wallet
+                                .get_signers(KeychainKind::External)
+                                .as_key_map(temp_wallet.secp_ctx()),
+                        );
+                    let proper_descriptor = Self::remove_checksum(proper_descriptor);
+                    
+                    // Update the wallet to store the proper xprv descriptor
+                    wallet.descriptor = Some(proper_descriptor);
+                } else {
+                    return Err(anyhow!("Hex-based descriptor found but no hex_secret in wallet"));
+                }
+            }
         }
 
         fs::create_dir_all(&wallet_path)?;
@@ -506,14 +537,20 @@ impl WalletManager {
         let wallet = fs::read_to_string(wallet_dir.join("wallet.json"))?;
         let mut export: WalletExport = serde_json::from_str(&wallet)?;
         
-        // If hex_secret is requested, we need to extract it from the wallet descriptor
+        // If hex_secret is requested, use the stored hex_secret if available,
+        // otherwise extract it from the xprv descriptor
         if hex_secret {
-            // Parse the descriptor to extract the xprv and get the hex secret
-            if let Some(descriptor) = &export.descriptor {
-                if let Some(hex_secret_value) = self.extract_hex_secret_from_descriptor(descriptor)? {
-                    export.hex_secret = Some(hex_secret_value);
+            if export.hex_secret.is_none() {
+                // Only extract from descriptor if no hex_secret was stored
+                if let Some(descriptor) = &export.descriptor {
+                    if let Some(hex_secret_value) = self.extract_hex_secret_from_descriptor(descriptor)? {
+                        export.hex_secret = Some(hex_secret_value);
+                    }
                 }
             }
+        } else {
+            // If hex_secret is not requested, remove it from the export
+            export.hex_secret = None;
         }
         
         Ok(export)
@@ -644,7 +681,7 @@ impl WalletManager {
         let file = fs::File::open(wallet_dir.join("wallet.json"))?;
 
         let (network, genesis_hash) = self.fallback_network();
-        let export: WalletExport = serde_json::from_reader(file)?;
+        let mut export: WalletExport = serde_json::from_reader(file)?;
 
         let wallet_config = WalletConfig {
             start_block: export.blockheight,
@@ -656,50 +693,11 @@ impl WalletManager {
                 let external_descriptor = export.descriptor().expect("expected a descriptor");
                 let internal_descriptor = export.change_descriptor().expect("expected a change descriptor");
                 
-                // Check if this is a hex-based descriptor and convert it
-                let (external, internal) = if external_descriptor.starts_with("tr([hex:") {
-                    // Extract hex secret from descriptor
-                    if let Some(hex_secret) = export.hex_secret.as_ref() {
-                        // Convert hex secret to proper xprv and create descriptors
-                        let xpriv = Self::xpriv_from_hex_secret(network, hex_secret)?;
-                        let (external_desc, internal_desc) = Self::default_descriptors(xpriv);
-                        
-                        // Create a temporary wallet to get the descriptor strings
-                        let temp_wallet = bdk::Wallet::create(external_desc, internal_desc)
-                            .network(network)
-                            .create_wallet_no_persist()?;
-                        
-                        // Get descriptor strings using the same method as WalletExport
-                        let external_str = temp_wallet
-                            .public_descriptor(KeychainKind::External)
-                            .to_string_with_secret(
-                                &temp_wallet
-                                    .get_signers(KeychainKind::External)
-                                    .as_key_map(temp_wallet.secp_ctx()),
-                            );
-                        let internal_str = temp_wallet
-                            .public_descriptor(KeychainKind::Internal)
-                            .to_string_with_secret(
-                                &temp_wallet
-                                    .get_signers(KeychainKind::Internal)
-                                    .as_key_map(temp_wallet.secp_ctx()),
-                            );
-                        
-                        // Remove checksums (same as WalletExport does)
-                        let external_str = Self::remove_checksum(external_str);
-                        let internal_str = Self::remove_checksum(internal_str);
-                        
-                        (external_str, internal_str)
-                    } else {
-                        return Err(anyhow!("Hex-based descriptor found but no hex_secret in export"));
-                    }
-                } else {
-                    (external_descriptor, internal_descriptor)
-                };
-                
+                // At this point, the descriptor should already be in proper xprv format
+                // since import_wallet converts hex-based descriptors before storing
                 WalletDescriptors {
-                    external,
-                    internal,
+                    external: external_descriptor,
+                    internal: internal_descriptor,
                 }
             },
         };
@@ -739,7 +737,7 @@ impl WalletManager {
     }
 
     fn xpriv_from_hex_secret(network: Network, hex_secret: &str) -> anyhow::Result<Xpriv> {
-        use spaces_protocol::bitcoin::bip32::Xpriv;
+        use spaces_protocol::bitcoin::bip32::{Xpriv, ChainCode, ChildNumber};
         use spaces_protocol::bitcoin::key::Secp256k1;
         use spaces_protocol::bitcoin::secp256k1::SecretKey;
         
@@ -755,10 +753,20 @@ impl WalletManager {
         let secret_key = SecretKey::from_slice(&secret_bytes)
             .map_err(|e| anyhow!("Invalid secret key: {}", e))?;
         
-        // Create Xpriv from secret key
+        // Create Xpriv directly from the private key bytes
+        // We need to create a proper xprv structure with the exact private key
         let secp = Secp256k1::new();
-        let xpriv = Xpriv::new_master(network, &secret_key.secret_bytes())
-            .map_err(|e| anyhow!("Failed to create xpriv: {}", e))?;
+        
+        // Create the xprv by manually constructing it with the exact private key
+        // This ensures the private key bytes are preserved exactly
+        let xpriv = Xpriv {
+            network: network.into(),
+            depth: 0,
+            parent_fingerprint: Default::default(),
+            child_number: ChildNumber::from_normal_idx(0)?,
+            chain_code: [0u8; 32].into(), // Use zero chain code for direct private key
+            private_key: secret_key,
+        };
         
         Ok(xpriv)
     }
