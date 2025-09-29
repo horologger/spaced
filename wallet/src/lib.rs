@@ -17,6 +17,7 @@ use bdk_wallet::{
 use bdk_wallet::chain::keychain_txout::KeychainTxOutIndex;
 use bincode::config;
 use hex;
+use bech32::{encode, Bech32, Hrp};
 use bitcoin::{
     absolute::{Height, LockTime},
     bip32::ChildNumber,
@@ -422,10 +423,16 @@ impl SpacesWallet {
         // WARNING: printing private keys is insecure; do this only for debugging
         let inner = keypair.to_inner();
         let secret = inner.secret_key();
-        println!(
-            "Signing with private key (hex): {}",
-            hex::encode(secret.secret_bytes())
-        );
+        let secret_bytes = secret.secret_bytes();
+        let secret_hex = hex::encode(secret_bytes);
+        
+        // Convert to nsec format (nostr bech32 encoding)
+        let hrp = Hrp::parse("nsec").unwrap_or_else(|_| Hrp::parse("nsec").unwrap());
+        let nsec = encode::<Bech32>(hrp, &secret_bytes)
+            .unwrap_or_else(|_| "encoding_failed".to_string());
+        
+        println!("Signing with private key (hex): {}", secret_hex);
+        println!("Signing with private key (nsec): {}", nsec);
 
         event.sign(secp256k1::Secp256k1::new(), &inner)?; // perform Schnorr signature with taproot key
         Ok(event) // return the now-signed event

@@ -234,13 +234,7 @@ pub trait Rpc {
         wallet: &str, // wallet label used to find an active wallet instance
         space: &str, // target space to sign for (normalized name or hash handled upstream)
         event: NostrEvent, // Nostr event payload to be signed
-    ) -> Result<NostrEvent, ErrorObjectOwned> {
-        self.wallet(&wallet) // fetch loaded wallet by name or return RPC_WALLET_NOT_LOADED
-            .await?
-            .send_sign_event(space, event) // delegate to wallet task to sign the event with space's key
-            .await
-            .map_err(|error| ErrorObjectOwned::owned(-1, error.to_string(), None::<String>)) // map internal error to JSON-RPC error
-    }
+    ) -> Result<NostrEvent, ErrorObjectOwned>;
 
     #[method(name = "walletgetinfo")]
     async fn wallet_get_info(&self, name: &str)
