@@ -70,7 +70,7 @@ pub(crate) type Responder<T> = oneshot::Sender<T>;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServerInfo {
-    pub network: String,
+    pub network: ExtendedNetwork,
     pub tip: ChainAnchor,
     pub chain: ChainInfo,
     pub ready: bool,
@@ -1769,16 +1769,18 @@ async fn get_server_info(
         .await
         .map_err(|e| anyhow!("Could not retrieve blockchain info ({})", e))?;
 
-    let start_block = if info.chain == "main" {
-        871_222
-    } else if info.chain.starts_with("test") {
-        50_000
-    } else {
-        0
+    let network = info.chain;
+    let network = ExtendedNetwork::from_core_arg(&network)
+        .map_err(|_| anyhow!("Unknown network ({})", &network))?;
+
+    let start_block = match network {
+        ExtendedNetwork::Mainnet => 871_222,
+        ExtendedNetwork::Testnet | ExtendedNetwork::Testnet4 => 50_000,
+        _ => 0,
     };
 
     Ok(ServerInfo {
-        network: info.chain,
+        network,
         tip,
         chain: ChainInfo {
             blocks: info.blocks,
