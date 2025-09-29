@@ -1459,19 +1459,19 @@ impl RpcWallet {
     }
 
     pub async fn send_sign_event(
-        &self,
-        space: &str,
-        event: NostrEvent,
+        &self, // handle to the RPC wallet task (sender side)
+        space: &str, // target space to sign for
+        event: NostrEvent, // event payload to sign
     ) -> anyhow::Result<NostrEvent> {
-        let (resp, resp_rx) = oneshot::channel();
+        let (resp, resp_rx) = oneshot::channel(); // oneshot to receive the signed event
         self.sender
-            .send(WalletCommand::SignEvent {
-                space: space.to_string(),
-                event,
-                resp,
+            .send(WalletCommand::SignEvent { // enqueue a sign request to wallet task
+                space: space.to_string(), // pass space name as owned String
+                event, // pass the event to be signed
+                resp, // provide response channel sender
             })
-            .await?;
-        resp_rx.await?
+            .await?; // await successful send to the wallet task
+        resp_rx.await? // await the signed event result from the wallet task
     }
 
     pub async fn send_list_transactions(

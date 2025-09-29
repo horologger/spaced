@@ -268,17 +268,17 @@ enum Commands {
     },
     /// Sign any Nostr event using the space's private key
     #[command(name = "signevent")]
-    SignEvent {
+    SignEvent { // `space-cli signevent`
         /// Space name (e.g., @example)
-        space: String,
+        space: String, // target space used for signing
 
         /// Path to a Nostr event json file (omit for stdin)
         #[arg(short, long)]
-        input: Option<PathBuf>,
+        input: Option<PathBuf>, // optional event JSON file; None reads from stdin
 
         /// Include a space-tag and trust path data
         #[arg(short, long)]
-        anchor: bool,
+        anchor: bool, // if true, add space tag and include Merkle proof
     },
     /// Verify a signed Nostr event against the space's public key
     #[command(name = "verifyevent")]
@@ -443,22 +443,22 @@ impl SpaceCli {
     }
 
     async fn sign_event(
-        &self,
-        space: String,
-        event: NostrEvent,
-        anchor: bool,
-        most_recent: bool,
+        &self, // use the configured RPC client and wallet
+        space: String, // normalized space name to sign for (e.g., "@example")
+        event: NostrEvent, // the Nostr event to be signed
+        anchor: bool, // if true, include Merkle proof (trust path)
+        most_recent: bool, // when anchoring, prefer most recent trust path if true
     ) -> Result<NostrEvent, ClientError> {
-        let mut result = self
-            .client
-            .wallet_sign_event(&self.wallet, &space, event)
-            .await?;
+        let mut result = self // start with the unsigned event
+            .client // RPC client to the spaced server
+            .wallet_sign_event(&self.wallet, &space, event) // request server to sign with space's key
+            .await?; // propagate RPC/transport errors
 
-        if anchor {
-            result = self.add_anchor(result, most_recent).await?
+        if anchor { // optionally add trust-path anchor data
+            result = self.add_anchor(result, most_recent).await? // fetch proof and embed into event
         }
 
-        Ok(result)
+        Ok(result) // return signed (and possibly anchored) event
     }
     async fn add_anchor(
         &self,
@@ -938,32 +938,32 @@ async fn handle_commands(cli: &SpaceCli, command: Commands) -> Result<(), Client
             cli.client.verify_listing(listing).await?;
             println!("{} Listing verified", "✓".color(Color::Green));
         }
-        Commands::SignEvent {
-            mut space,
-            input,
-            anchor,
+        Commands::SignEvent { // subcommand to sign a Nostr event
+            mut space, // space argument; mutable so we can normalize it
+            input, // optional file path for event JSON; None means read from stdin
+            anchor, // whether to include space tag and trust-path (Merkle proof)
         } => {
-            let mut event = read_event(input)
-                .map_err(|e| ClientError::Custom(format!("input error: {}", e.to_string())))?;
+            let mut event = read_event(input) // parse Nostr event from file or stdin
+                .map_err(|e| ClientError::Custom(format!("input error: {}", e.to_string())))?; // map parsing errors to ClientError
 
-            space = normalize_space(&space);
-            match event.space() {
-                None if anchor => event
+            space = normalize_space(&space); // ensure '@' prefix and lowercase for the space
+            match event.space() { // inspect current space tag on the event
+                None if anchor => event // if missing and anchoring requested, insert space tag at index 0
                     .tags
                     .insert(0, NostrTag(vec!["space".to_string(), space.clone()])),
-                Some(tag) => {
+                Some(tag) => { // if a space tag exists, validate it matches the requested space
                     if tag != space {
                         return Err(ClientError::Custom(format!(
                             "Expected a space tag with value '{}', got '{}'",
                             space, tag
-                        )));
+                        ))); // mismatch: abort with clear error
                     }
                 }
-                _ => {}
+                _ => {} // no-op when not anchoring and no tag present
             };
 
-            let result = cli.sign_event(space, event, anchor, false).await?;
-            println!("{}", serde_json::to_string(&result).expect("result"));
+            let result = cli.sign_event(space, event, anchor, false).await?; // sign (and optionally add anchor proof)
+            println!("{}", serde_json::to_string(&result).expect("result")); // print signed event as compact JSON
         }
         Commands::SignZone {
             space,
