@@ -17,6 +17,7 @@ use bdk_wallet::{
 use bdk_wallet::chain::keychain_txout::KeychainTxOutIndex;
 use bincode::config;
 use hex;
+use bech32::{encode, Bech32, Hrp};
 use bitcoin::{
     absolute::{Height, LockTime},
     bip32::ChildNumber,
@@ -394,32 +395,47 @@ impl SpacesWallet {
     }
 
     pub fn sign_event<H: KeyHasher>(
-        &mut self,
-        src: &mut impl DataSource,
-        space: &str,
-        mut event: NostrEvent,
+        &mut self, // mutable wallet to derive keys and sign
+        src: &mut impl DataSource, // data source to query chain state (space ownership)
+        space: &str, // space name (e.g., "@example")
+        mut event: NostrEvent, // event to be signed (may be updated)
     ) -> anyhow::Result<NostrEvent> {
-        if event.space().is_some_and(|s| s != space) {
-            return Err(anyhow::anyhow!("Space tag does not match specified space"));
+        if event.space().is_some_and(|s| s != space) { // if event has a space tag and it mismatches argument
+            return Err(anyhow::anyhow!("Space tag does not match specified space")); // reject to prevent misuse
         }
 
-        let label = SLabel::from_str(space)?;
-        let space_key = SpaceKey::from(H::hash(label.as_ref()));
-        let outpoint = match src.get_space_outpoint(&space_key)? {
-            None => return Err(anyhow::anyhow!("Space not found")),
-            Some(outpoint) => outpoint,
+        let label = SLabel::from_str(space)?; // parse human space string into canonical label
+        let space_key = SpaceKey::from(H::hash(label.as_ref())); // hash label into protocol key
+        let outpoint = match src.get_space_outpoint(&space_key)? { // find on-chain outpoint owning this space
+            None => return Err(anyhow::anyhow!("Space not found")), // space not registered or unknown
+            Some(outpoint) => outpoint, // proceed with located outpoint
         };
-        let utxo = match self.get_utxo(outpoint) {
-            None => return Err(anyhow::anyhow!("Space not owned by wallet")),
-            Some(utxo) => utxo,
+        let utxo = match self.get_utxo(outpoint) { // check wallet actually controls the space UTXO
+            None => return Err(anyhow::anyhow!("Space not owned by wallet")), // cannot sign without ownership
+            Some(utxo) => utxo, // contains keychain and derivation index
         };
 
+        // derive taproot keypair for space XXX
         let keypair = self
-            .get_taproot_keypair(utxo.keychain, utxo.derivation_index)
-            .context("Could not derive taproot keypair to sign message")?;
+            .get_taproot_keypair(utxo.keychain, utxo.derivation_index) // derive taproot keypair for space
+            .context("Could not derive taproot keypair to sign message")?; // propagate derivation errors
 
-        event.sign(secp256k1::Secp256k1::new(), &keypair.to_inner())?;
-        Ok(event)
+        // WARNING: printing private keys is insecure; do this only for debugging
+        let inner = keypair.to_inner();
+        let secret = inner.secret_key();
+        let secret_bytes = secret.secret_bytes();
+        let secret_hex = hex::encode(secret_bytes);
+        
+        // Convert to nsec format (nostr bech32 encoding)
+        let hrp = Hrp::parse("nsec").unwrap_or_else(|_| Hrp::parse("nsec").unwrap());
+        let nsec = encode::<Bech32>(hrp, &secret_bytes)
+            .unwrap_or_else(|_| "encoding_failed".to_string());
+        
+        println!("Signing with private key (hex): {}", secret_hex);
+        println!("Signing with private key (nsec): {}", nsec);
+
+        event.sign(secp256k1::Secp256k1::new(), &inner)?; // perform Schnorr signature with taproot key
+        Ok(event) // return the now-signed event
     }
 
     pub fn verify_event<H: KeyHasher>(
