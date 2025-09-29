@@ -395,24 +395,24 @@ impl SpacesWallet {
     }
 
     pub fn sign_event<H: KeyHasher>(
-        &mut self, // mutable wallet to derive keys and sign
-        src: &mut impl DataSource, // data source to query chain state (space ownership)
-        space: &str, // space name (e.g., "@example")
-        mut event: NostrEvent, // event to be signed (may be updated)
+        &mut self,
+        src: &mut impl DataSource,
+        space: &str,
+        mut event: NostrEvent,
     ) -> anyhow::Result<NostrEvent> {
-        if event.space().is_some_and(|s| s != space) { // if event has a space tag and it mismatches argument
-            return Err(anyhow::anyhow!("Space tag does not match specified space")); // reject to prevent misuse
+        if event.space().is_some_and(|s| s != space) {
+            return Err(anyhow::anyhow!("Space tag does not match specified space"));
         }
 
-        let label = SLabel::from_str(space)?; // parse human space string into canonical label
-        let space_key = SpaceKey::from(H::hash(label.as_ref())); // hash label into protocol key
-        let outpoint = match src.get_space_outpoint(&space_key)? { // find on-chain outpoint owning this space
-            None => return Err(anyhow::anyhow!("Space not found")), // space not registered or unknown
-            Some(outpoint) => outpoint, // proceed with located outpoint
+        let label = SLabel::from_str(space)?;
+        let space_key = SpaceKey::from(H::hash(label.as_ref()));
+        let outpoint = match src.get_space_outpoint(&space_key)? {
+            None => return Err(anyhow::anyhow!("Space not found")),
+            Some(outpoint) => outpoint,
         };
-        let utxo = match self.get_utxo(outpoint) { // check wallet actually controls the space UTXO
-            None => return Err(anyhow::anyhow!("Space not owned by wallet")), // cannot sign without ownership
-            Some(utxo) => utxo, // contains keychain and derivation index
+        let utxo = match self.get_utxo(outpoint) {
+            None => return Err(anyhow::anyhow!("Space not owned by wallet")),
+            Some(utxo) => utxo,
         };
 
         // derive taproot keypair for space XXX
