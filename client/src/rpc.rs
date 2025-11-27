@@ -556,8 +556,14 @@ impl WalletManager {
         let tmp = bdk::Wallet::create(external, internal)
             .network(network)
             .create_wallet_no_persist()?;
+
+        let start_block_height = match start_block_height {
+            Some(height) => height,
+            None => self.network.genesis().height,
+        };
+
         let export =
-            WalletExport::export_wallet(&tmp, &name, start_block_height.unwrap_or_default()).map_err(|e| anyhow!(e))?;
+            WalletExport::export_wallet(&tmp, &name, start_block_height).map_err(|e| anyhow!(e))?;
 
         Ok(export)
     }
