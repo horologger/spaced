@@ -89,11 +89,11 @@ impl Store {
         Ok(Database::new(Box::new(FileBackend::new(file)?), config)?)
     }
 
-    pub fn iter(&self) -> SnapshotIterator<Sha256Hasher> {
+    pub fn iter(&self) -> SnapshotIterator<'_, Sha256Hasher> {
         return self.0.iter();
     }
 
-    pub fn write(&self) -> Result<WriteTx> {
+    pub fn write(&self) -> Result<WriteTx<'_>> {
         Ok(self.0.begin_write()?)
     }
 
